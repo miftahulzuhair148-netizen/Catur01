@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Catur Online & Lokal</title>
+
+<!-- Chessboard CSS -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+
+<style>
+body { font-family:sans-serif; background:#121212; color:#fff; text-align:center; margin:0; padding:0; }
+h2 { margin-top:20px; }
+input, button { padding:8px; margin:4px; border-radius:6px; border:none; }
+button { background:#2ecc71; font-weight:bold; color:#000; cursor:pointer; }
+#login, #game { max-width:400px; margin:auto; margin-top:20px; }
+#game { display:none; }
+#board { width: 100%; max-width:400px; margin:20px auto; }
+#status { margin:10px; }
+#chatbox { height:150px; overflow-y:auto; background:#222; padding:10px; text-align:left; margin-bottom:10px; border-radius:8px; }
+.error { color:#ff5252; }
+</style>
+</head>
+<body>
+
+<h2>Catur Online & Lokal</h2>
+
+<!-- LOGIN -->
+<div id="login">
+  <input id="nameInput" placeholder="Nama">
+  <input id="email" placeholder="Email">
+  <input id="password" type="password" placeholder="Password minimal 6"><br>
+  <button id="loginBtn">Masuk / Daftar</button>
+  <div id="loginError" class="error"></div>
+</div>
+
+<!-- GAME -->
+<div id="game">
+  <div id="profileBox"></div>
+  <div id="status">Menunggu...</div>
+  <div id="board"></div>
+
+  <div id="chatbox"></div>
+  <input id="chatInput" placeholder="Chat...">
+  <button id="sendChat">Kirim</button>
+
+  <button id="logoutBtn" style="background:#ff5252;">Logout</button>
+</div>
+
+<!-- AUDIO -->
+<audio id="moveSound" src="https://www.soundjay.com/button/beep-07.mp3"></audio>
+
+<!-- LIBRARY -->
+<script src="https://cdn.jsdelivr.net/npm/chess.js@1.0.0/chess.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<script>
+// ====== FIREBASE CONFIG ======
+const firebaseConfig = {
+  apiKey: "AIzaSyDkc6U4iRgPCaBA8ckQdn6YX0dh5-uNpTg",
+  authDomain: "catur-online-77231.firebaseapp.com",
+  databaseURL: "https://catur-online-77231-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "catur-online-77231",
+  storageBucket: "catur-online-77231.appspot.com",
+  messagingSenderId: "818334923522",
+  appId: "1:818334923522:web:b63297ef12e6b879c9201b"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.database();
+
+// ====== ELEMENT ======
+const login = document.getElementById('login');
+const game = document.getElementById('game');
+const boardEl = document.getElementById('board');
+const statusEl = document.getElementById('status');
+const profileBox = document.getElementById('profileBox');
+const loginError = document.getElementById('loginError');
+const chatInput = document.getElementById('chatInput');
+const chatbox = document.getElementById('chatbox');
+const moveSound = document.getElementById('moveSound');
+
+let chess = new Chess();
+let board = null;
+let onlineRoom = null;
+let isOnline = false;
+let myColor = 'w';
+let uid = null;
+let myName = "";
+
+// ====== LOGIN ======
+document.getElementById('loginBtn').onclick = async () => {
+  const email = document.getElementById('email').value.trim();
+  const pass = document.getElementById('password').value.trim();
+  myName = document.getElementById('nameInput').value.trim();
+  if(!email || !pass || !myName){ loginError.textContent="Lengkapi semua field"; return; }
+  try{
+    const res = await auth.signInWithEmailAndPassword(email, pass);
+    afterLogin(res.user);
+  }catch{
+    try{
+      const res = await auth.createUserWithEmailAndPassword(email, pass);
+      afterLogin(res.user);
+    }catch(er){ loginError.textContent = er.message; }
+  }
+};
+
+function afterLogin(user){
+  uid = user.uid;
+  db.ref('users/' + uid).set({name: myName});
+  login.style.display='none';
+  game.style.display='block';
+  profileBox.textContent = 'Login sebagai: ' + myName;
+  startLocal(); // default langsung bisa main lokal
+}
+
+// ====== LOCAL MODE ======
+function startLocal(){
+  isOnline = false;
+  chess.reset();
+  myColor = 'w';
+  if(board) board.destroy();
+  board = Chessboard('board', {
+    draggable:true,
+    position:'start',
+    onDragStart:(source, piece)=>{
+      if(chess.game_over()) return false;
+      return (myColor==='w' && piece.search(/^w/)===0) || (myColor==='b' && piece.search(/^b/)===0);
+    },
+    onDrop:(source, target)=>{
+      const move = chess.move({from:source, to:target, promotion:'q'});
+      if(move===null) return 'snapback';
+      playMoveSound();
+      updateStatus();
+      return;
+    }
+  });
+  updateStatus();
+}
+
+// ====== ONLINE MODE ======
+function startOnline(){
+  isOnline = true;
+  const room = prompt("Nama room:"); if(!room) return;
+  onlineRoom = room;
+  myColor = prompt("Pilih warna (w/h): w=Putih, h=Hitam")||'w';
+  const roomRef = db.ref('rooms/'+room);
+  roomRef.once('value', snap=>{
+    if(!snap.exists()) roomRef.set({fen: chess.fen(), turn:'w', chat:{}});
+  });
+
+  // listen realtime
+  roomRef.on('value', snap=>{
+    const data = snap.val(); if(!data) return;
+    chess.load(data.fen);
+    updateBoard();
+    updateStatus(data.turn);
+    chatbox.innerHTML='';
+    if(data.chat) Object.values(data.chat).forEach(msg=>addChat(msg));
+  });
+
+  if(board) board.destroy();
+  board = Chessboard('board', {
+    draggable:true,
+    position:chess.fen(),
+    orientation: myColor==='w'?'white':'black',
+    onDragStart:(source, piece)=>{
+      if(chess.game_over()) return false;
+      if((myColor==='w' && piece.search(/^w/)===0) || (myColor==='b' && piece.search(/^b/)===0))
+        return chess.turn()===myColor;
+      return false;
+    },
+    onDrop:(source, target)=>{
+      const move = chess.move({from:source, to:target, promotion:'q'});
+      if(move===null) return 'snapback';
+      playMoveSound();
+      db.ref('rooms/'+onlineRoom).update({fen:chess.fen(), turn:chess.turn()});
+    }
+  });
+}
+
+// ====== BOARD & STATUS ======
+function updateBoard(){ if(board) board.position(chess.fen()); }
+function updateStatus(turn){ 
+  if(!turn) turn = chess.turn();
+  if(chess.in_checkmate()) statusEl.textContent='Skakmat! ' + (turn==='w'?'Hitam menang':'Putih menang');
+  else if(chess.in_draw()) statusEl.textContent='Seri!';
+  else statusEl.textContent='Giliran: ' + (turn==='w'?'Putih':'Hitam');
+}
+
+// ====== CHAT ======
+document.getElementById('sendChat').onclick = ()=>{
+  if(!chatInput.value) return;
+  if(isOnline && onlineRoom){
+    db.ref('rooms/'+onlineRoom+'/chat').push({user:myName,text:chatInput.value});
+  } else addChat(myName + ': ' + chatInput.value);
+  chatInput.value='';
+};
+function addChat(msg){
+  chatbox.innerHTML += msg + '<br>';
+  chatbox.scrollTop = chatbox.scrollHeight;
+}
+
+// ====== SOUND ======
+function playMoveSound(){ moveSound.play(); }
+
+// ====== LOGOUT ======
+document.getElementById('logoutBtn').onclick = ()=>{
+  auth.signOut();
+  location.reload();
+};
+</script>
+
+</body>
+</html>
